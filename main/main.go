@@ -61,7 +61,8 @@ type AuthDataAnswer struct {
 }
 
 var checkCredentials = func(login, password string) (Credential, error){
-	byt := []byte(`{"role":"admin","name":"Вася Пупкинович"}`)
+	//byt := []byte(`{"role":"admin","name":"Вася Пупкинович"}`)
+	byt := []byte(`{"role":"admin","name":"Вася Пупкинович", "email":"nvs@nvs.ru"}`)
 	res := Credential{}
 	json.Unmarshal(byt, &res)
 	var err error
