@@ -1,12 +1,13 @@
-package src
+package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"github.com/auth0/go-jwt-middleware"
 	"github.com/dgrijalva/jwt-go"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
-	"github.com/pkg/errors"
 	"github.com/urfave/negroni"
 	"net/http"
 	"time"
@@ -48,14 +49,31 @@ var StatusHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request
 type Credential struct {
 	Role string `json:"role"`
 	Name string `json:"name"`
+	Email string `json:"email"`
 }
 
-var checkCredentials = func(login, password string) (cred Credential, err error){
-	return Credential{
-		Role: "admin",
-		Name: "Вася Пупкин",
-	},
-	errors.New("gggggggggg")
+type AuthDataAnswer struct {
+	*Credential `json:"user"`
+	Token string `json:"token"`
+	Error bool `json:"error"`
+	Expires string `json:"expires"`
+	Auth bool `json:"auth"`
+}
+
+var checkCredentials = func(login, password string) (Credential, error){
+	byt := []byte(`{"role":"admin","name":"Вася Пупкинович"}`)
+	res := Credential{}
+	json.Unmarshal(byt, &res)
+	var err error
+	err = nil
+
+	if len(res.Email) <= 0 {
+		err = errors.New(fmt.Sprintf("BingoBoom auth server doesn't send required field 'email' for user %d. Sorry. Can't authenticate.", login))
+	}
+
+	//err = "login and password are incorrect";
+
+	return res, err
 }
 
 var signingKey = []byte("Engineer_Panel_Secret_Key_159753")
@@ -65,7 +83,7 @@ var GetTokenHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		var answer = SimpleAnswer{
 			Error: false,
-			Message: "login and password are incorrect",
+			Message: err.Error(),
 		}
 		payload, _:= json.Marshal(answer)
 		w.Header().Set("Content-Type", "application/json")
@@ -76,12 +94,25 @@ var GetTokenHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Reque
 
 	token := jwt.New(jwt.SigningMethodHS256)
 	claims := make(jwt.MapClaims)
+
 	claims["role"] = user.Role
 	claims["name"] = user.Name
-	claims["exp"] = time.Now().Add(time.Hour * 24).Unix()
+	expires := time.Now().Add(time.Hour*24)
+
+	claims["exp"] = expires.Unix()
 	token.Claims = claims
 	tokenString, _ := token.SignedString(signingKey)
-	w.Write([]byte(tokenString))
+
+	var answer = AuthDataAnswer{
+		&user,
+		tokenString,
+		false,
+		expires.Format("2006-01-02 15:04:05"),
+		true,
+	}
+	payload, _:= json.Marshal(answer)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(payload))
 })
 
 var jwtApiMiddleware = jwtmiddleware.New(jwtmiddleware.Options{
