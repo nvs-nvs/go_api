@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/urfave/negroni"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -27,7 +28,7 @@ var NotAllowed = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request){
 	w.Write([]byte(payload))
 })
 
-var api = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request){
+var testHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request){
 	var answer = SimpleAnswer{
 		Error:   true,
 		Message: r.Host,
@@ -116,15 +117,54 @@ var GetTokenHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Reque
 	w.Write([]byte(payload))
 })
 
+var userModelMiddleware = func (w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+	token := r.Context().Value("user").(*jwt.Token)
+	parsedToken, err := jwt.Parse(token.Raw, func(token *jwt.Token) (interface{}, error) {
+		return []byte(signingKey), nil
+	})
+
+	if err != nil {
+		var answer = SimpleAnswer{
+			Error: true,
+			Message: err.Error(),
+		}
+		payload, _:= json.Marshal(answer)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(payload))
+		return
+	}
+	claims := parsedToken.Claims.(jwt.MapClaims)
+	fmt.Printf("%f", claims["email"])
+	//var Cred = Credential{
+	//	claims["role"].(string),
+	//	claims["name"].(string),
+	//	claims["email"].(string),
+	//}
+	//fmt.Printf("%f", Cred)
+	next(w, r)
+}
+
 var jwtApiMiddleware = jwtmiddleware.New(jwtmiddleware.Options{
 	ValidationKeyGetter: func(token *jwt.Token) (interface{}, error){
-		return signingKey, nil
+		return []byte(signingKey), nil
+	},
+	Extractor: func(r *http.Request) (s string, e error) {
+		authHeader := r.Header.Get("X-Auth-Token")
+		if authHeader == "" {
+			return "", errors.New("Token is required")
+		}
+		authHeaderParts := strings.Split(authHeader, " ")
+		if len(authHeaderParts) != 2 || strings.ToLower(authHeaderParts[0]) != "bearer" {
+			return "", errors.New("Authorization header format must be Bearer {token}")
+		}
+		return authHeaderParts[1], nil
 	},
 	SigningMethod: jwt.SigningMethodHS256,
 	ErrorHandler: func(w http.ResponseWriter, r *http.Request, err string) {
 		var answer = SimpleAnswer{
 			Error: true,
-			Message: "Token is required but not exists",
+			Message: err,
 		}
 		payload, _:= json.Marshal(answer)
 		w.Header().Set("Content-Type", "application/json")
@@ -134,23 +174,28 @@ var jwtApiMiddleware = jwtmiddleware.New(jwtmiddleware.Options{
 })
 
 func main(){
-	/* Простые роуты */
+	/* Основной Роут для простых url*/
 	r:= mux.NewRouter()
 	r.Handle("/status", StatusHandler).Methods("GET")
-	r.Handle("/login", GetTokenHandler).Methods("POST", "GET")
+	r.Handle("/login", GetTokenHandler).Methods("POST")
 
-	/* Роуты Апи */
-	apiRouter := mux.NewRouter()
+	/* Суброутер для всех url, которые начинается с /api */
+	api := mux.NewRouter().PathPrefix("/api").Subrouter()
 
-	apiRouter.Handle("/test", api).Methods("GET", "POST")
+	/*
+	Суброутер для всех url, которые начинается с /api
+	будет защищено c помощью jwt middleware
+	*/
+	r.PathPrefix("/api").Handler(negroni.New(
+		negroni.HandlerFunc(jwtApiMiddleware.HandlerWithNext),
+		negroni.HandlerFunc(userModelMiddleware),
+		negroni.Wrap(api),
+	))
 
-	negroniInstance :=
-		negroni.New(
-			negroni.HandlerFunc(
-				jwtApiMiddleware.HandlerWithNext),
-				negroni.Wrap(apiRouter))
+	api.HandleFunc("/test", testHandler)
 
-	r.PathPrefix("/api").Handler(negroniInstance)
+	n := negroni.Classic()
+	n.UseHandler(r)
 
 	r.PathPrefix("/").HandlerFunc(NotAllowed)
 
@@ -159,5 +204,5 @@ func main(){
 	methods := handlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE", "OPTIONS"})
 	origins := handlers.AllowedOrigins([]string{"*"})
 
-	http.ListenAndServe(":5000", handlers.CORS(headers,methods, origins)(r))
+	http.ListenAndServe(":5000", handlers.CORS(headers,methods, origins)(n))
 }
